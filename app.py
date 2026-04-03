@@ -68,11 +68,11 @@ except Exception:
         pass
 
 # ---- Theme (screen-background-aware, optimized for transparency) ----
-TXT = '#ffffff'  # pure white for ALL text (bold/italic/normal)
+TXT = '#f0f0f0'  # single bright color for ALL text (bold/italic/normal)
 C = {
     'bg': '#0a0e1a', 'bg2': '#0d1220', 'surface': '#131828',
     'hover': '#1a2038', 'border': '#283050',
-    'text': TXT, 'dim': TXT, 'muted': TXT,
+    'text': TXT, 'dim': '#b0b8d0', 'muted': '#7080a0',
     'accent': '#6e8efb', 'accent2': '#8aa4ff',
     'green': '#34d399', 'red': '#f87171', 'yellow': '#fbbf24',
     'code_bg': '#0c1018', 'quote_bg': '#0e1225',
@@ -234,16 +234,16 @@ class App:
         self.prompting = False
         self.minimized = False
         self.hotkey_thread_id = None
-        self.ctrl_held = False
         self._drag = {'x': 0, 'y': 0}
         self._rsz = {'x': 0, 'y': 0, 'w': 0, 'h': 0}
 
         self._build_titlebar()
         self._build_edit()
+        self._build_prompter()
+
         self.edit_frame.pack(fill='both', expand=True)
         self.root.after(50, lambda: self.grip.lift())
         self.root.after(300, self._apply_win32)
-        self.root.after(150, self._poll_ctrl)
 
     # ---- Win32 ----
     def _get_hwnd(self):
@@ -274,40 +274,25 @@ class App:
         except Exception:
             pass
 
-    def _poll_ctrl(self):
-        if self.prompting:
-            # VK_CONTROL is 0x11, VK_MENU (Alt) is 0x12
-            ctrl = (user32.GetAsyncKeyState(0x11) & 0x8000) != 0
-            alt = (user32.GetAsyncKeyState(0x12) & 0x8000) != 0
-            is_held = ctrl and alt
-            if is_held != self.ctrl_held:
-                self.ctrl_held = is_held
-                self._apply_click_through_state()
-        self.root.after(150, self._poll_ctrl)
-
-    def _apply_click_through_state(self):
+    def _toggle_click_through(self):
         try:
             hwnd = self._get_hwnd()
+            self.click_through = not self.click_through
             style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-            if not self.prompting or self.ctrl_held:
-                # Make clickable (remove TRANSPARENT)
-                style &= ~WS_EX_TRANSPARENT
-                user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
-                self._set_opacity(self.opacity)
-                if self.prompting:
-                    self.status_lbl.configure(text='LIVE (Hold Ctrl+Alt to Click)', fg=C['green'])
-                else:
-                    self.status_lbl.configure(text='EDIT', fg=C['accent'])
-            else:
-                # Make pass-through (add TRANSPARENT)
+            if self.click_through:
                 style |= WS_EX_TRANSPARENT | WS_EX_LAYERED
                 user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
                 self._set_opacity(self.opacity)
-                if self.prompting:
-                    self.status_lbl.configure(text='LIVE (Pass-through)', fg='white')
+                self._flash('PASS-THROUGH | Ctrl+Shift+Space to refocus')
+            else:
+                style &= ~WS_EX_TRANSPARENT
+                user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
+                self._set_opacity(self.opacity)
+                user32.SetForegroundWindow(hwnd)
+                self._flash('FOCUSED')
             user32.SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f'[!] Click-through error: {e}', flush=True)
 
     def _minimize(self):
         """Minimize using Win32 ShowWindow (works with frameless windows)."""
@@ -334,7 +319,7 @@ class App:
     def _hotkey_thread(self):
         self.hotkey_thread_id = ctypes.windll.kernel32.GetCurrentThreadId()
         mods = MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT
-        keys = [(2, VK_S), (3, VK_UP), (4, VK_DOWN), (5, VK_OEM_PLUS), (6, VK_OEM_MINUS)]
+        keys = [(1, VK_SPACE), (2, VK_S), (3, VK_UP), (4, VK_DOWN), (5, VK_OEM_PLUS), (6, VK_OEM_MINUS)]
         ok = sum(1 for hid, vk in keys if user32.RegisterHotKey(None, hid, mods, vk))
         print(f'[+] Global hotkeys: {ok}/{len(keys)} registered', flush=True)
 
@@ -343,6 +328,7 @@ class App:
             if msg.message == WM_HOTKEY:
                 hid = msg.wParam
                 actions = {
+                    1: self._toggle_click_through,
                     2: self._toggle_auto_scroll,
                     3: lambda: self._adj_speed(1),
                     4: lambda: self._adj_speed(-1),
@@ -400,10 +386,11 @@ class App:
     def _build_edit(self):
         self.edit_frame = tk.Frame(self.root, bg=C['bg'])
 
+        # BOTTOM BAR FIRST so it never gets clipped
         bar = tk.Frame(self.edit_frame, bg=C['bg2'])
         bar.pack(side='bottom', fill='x', padx=0, pady=0)
 
-        tk.Label(bar, text=' Ctrl+Enter = Start  |  Hold Ctrl+Alt to interact while LIVE',
+        tk.Label(bar, text=' Ctrl+Enter = Start  |  Ctrl+Shift+Space = Focus toggle',
                  bg=C['bg2'], fg=C['muted'], font=('Segoe UI', 8)).pack(side='left', padx=8, pady=8)
 
         tk.Button(bar, text='  \u25B6  Start Prompting  ', bg=C['accent'], fg='white',
@@ -492,12 +479,8 @@ class App:
             self.renderer.render(script)
             self.edit_frame.pack_forget()
             self.pframe.pack(fill='both', expand=True)
+            self.status_lbl.configure(text='LIVE', fg=C['green'])
             self.prompting = True
-            
-            # Immediately evaluate Ctrl+Alt state on entry
-            self.ctrl_held = ((user32.GetAsyncKeyState(0x11) & 0x8000) != 0) and ((user32.GetAsyncKeyState(0x12) & 0x8000) != 0)
-            self._apply_click_through_state()
-            
             self.ptext.yview_moveto(0)
             self.grip.lift()
         except Exception as e:
@@ -508,8 +491,8 @@ class App:
             self._toggle_auto_scroll()
         self.pframe.pack_forget()
         self.edit_frame.pack(fill='both', expand=True)
+        self.status_lbl.configure(text='EDIT', fg=C['accent'])
         self.prompting = False
-        self._apply_click_through_state()
         self.grip.lift()
 
     # ---- Scroll ----
