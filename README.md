@@ -25,14 +25,14 @@ py app.py
 
 1. **Paste** your markdown script in the editor
 2. Click **▶ Start Prompting** (or press `Ctrl+Enter`)
-3. **Scroll manually** with mouse wheel (Hold `Ctrl+Alt` first), or enable auto-scroll
-4. **Pass-through mode** is on by default while LIVE. Hold `Ctrl+Alt` to interact with the overlay.
+3. **Scroll manually** with mouse wheel, or enable auto-scroll
+4. Use `Ctrl+Shift+Space` to toggle click-through mode (interact with apps behind the overlay)
 
 ## Global Hotkeys
 
 | Shortcut | Action |
 |---|---|
-| `Hold Ctrl+Alt` (while LIVE)| Temporarily accept mouse clicks and scroll |
+| `Ctrl+Shift+Space` | Toggle click-through / focus |
 | `Ctrl+Shift+S` | Toggle auto-scroll |
 | `Ctrl+Shift+Up` | Increase scroll speed |
 | `Ctrl+Shift+Down` | Decrease scroll speed |
