@@ -30,6 +30,8 @@ py app.py
 
 ## Global Hotkeys
 
+Ctrl+Atl (all actions works) otherwise passthrough. This is the most efficient method to use if you are UI freak. If using the below shortcuts it will not work. 
+
 | Shortcut | Action |
 |---|---|
 | `Ctrl+Shift+Space` | Toggle click-through / focus |
