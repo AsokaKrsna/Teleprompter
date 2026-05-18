@@ -2,7 +2,7 @@
 """
 Teleprompter - Screen-Capture Invisible Overlay
 Global Hotkeys:
-  Ctrl+Shift+Space  Toggle click-through
+  Hold Ctrl+Shift   Interact with Prompter (UI, Mouse Scroll)
   Ctrl+Shift+S      Toggle auto-scroll
   Ctrl+Shift+Up     Faster scroll
   Ctrl+Shift+Down   Slower scroll
@@ -16,6 +16,7 @@ import tkinter as tk
 import re
 import threading
 import sys
+import queue
 
 # ---- Win32 ----
 WDA_EXCLUDEFROMCAPTURE = 0x00000011
@@ -234,6 +235,7 @@ class App:
         self.prompting = False
         self.minimized = False
         self.hotkey_thread_id = None
+        self.cmd_queue = queue.Queue()
         self._drag = {'x': 0, 'y': 0}
         self._rsz = {'x': 0, 'y': 0, 'w': 0, 'h': 0}
 
@@ -261,6 +263,7 @@ class App:
         except Exception as e:
             print(f'[!] Win32 error: {e}', flush=True)
         threading.Thread(target=self._hotkey_thread, daemon=True).start()
+        self._monitor_modifiers()
 
     def _set_opacity(self, val):
         self.opacity = max(0.15, min(1.0, val))
@@ -274,25 +277,49 @@ class App:
         except Exception:
             pass
 
-    def _toggle_click_through(self):
+    def _set_click_through(self, enabled):
+        if self.click_through == enabled:
+            return
         try:
             hwnd = self._get_hwnd()
-            self.click_through = not self.click_through
+            self.click_through = enabled
             style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-            if self.click_through:
+            if enabled:
                 style |= WS_EX_TRANSPARENT | WS_EX_LAYERED
                 user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
                 self._set_opacity(self.opacity)
-                self._flash('PASS-THROUGH | Ctrl+Shift+Space to refocus')
             else:
                 style &= ~WS_EX_TRANSPARENT
                 user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
                 self._set_opacity(self.opacity)
                 user32.SetForegroundWindow(hwnd)
-                self._flash('FOCUSED')
             user32.SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)
         except Exception as e:
             print(f'[!] Click-through error: {e}', flush=True)
+
+    def _monitor_modifiers(self):
+        try:
+            while True:
+                fn = self.cmd_queue.get_nowait()
+                fn()
+        except queue.Empty:
+            pass
+
+        # 0x11 is VK_CONTROL, 0x10 is VK_SHIFT
+        ctrl = user32.GetAsyncKeyState(0x11) & 0x8000
+        shift = user32.GetAsyncKeyState(0x10) & 0x8000
+        is_held = bool(ctrl and shift)
+
+        if self.prompting:
+            if is_held:
+                if self.click_through:
+                    self._set_click_through(False)
+                    self.ctrl_frame.pack(side='bottom', fill='x', before=self.pf_frame)
+            else:
+                if not self.click_through:
+                    self._set_click_through(True)
+                    self.ctrl_frame.pack_forget()
+        self.root.after(50, self._monitor_modifiers)
 
     def _minimize(self):
         """Minimize using Win32 ShowWindow (works with frameless windows)."""
@@ -319,16 +346,17 @@ class App:
     def _hotkey_thread(self):
         self.hotkey_thread_id = ctypes.windll.kernel32.GetCurrentThreadId()
         mods = MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT
-        keys = [(1, VK_SPACE), (2, VK_S), (3, VK_UP), (4, VK_DOWN), (5, VK_OEM_PLUS), (6, VK_OEM_MINUS)]
-        ok = sum(1 for hid, vk in keys if user32.RegisterHotKey(None, hid, mods, vk))
+        keys = [(2, VK_S), (3, VK_UP), (4, VK_DOWN), (5, VK_OEM_PLUS), (6, VK_OEM_MINUS)]
         print(f'[+] Global hotkeys: {ok}/{len(keys)} registered', flush=True)
 
         msg = ctypes.wintypes.MSG()
-        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
+        while True:
+            ret = user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
+            if ret <= 0:
+                break
             if msg.message == WM_HOTKEY:
                 hid = msg.wParam
                 actions = {
-                    1: self._toggle_click_through,
                     2: self._toggle_auto_scroll,
                     3: lambda: self._adj_speed(1),
                     4: lambda: self._adj_speed(-1),
@@ -337,7 +365,7 @@ class App:
                 }
                 fn = actions.get(hid)
                 if fn:
-                    self.root.after(0, fn)
+                    self.cmd_queue.put(fn)
 
     # ---- Title bar ----
     def _build_titlebar(self):
@@ -390,7 +418,7 @@ class App:
         bar = tk.Frame(self.edit_frame, bg=C['bg2'])
         bar.pack(side='bottom', fill='x', padx=0, pady=0)
 
-        tk.Label(bar, text=' Ctrl+Enter = Start  |  Ctrl+Shift+Space = Focus toggle',
+        tk.Label(bar, text=' Ctrl+Enter = Start  |  Hold Ctrl+Shift = Interact while LIVE',
                  bg=C['bg2'], fg=C['muted'], font=('Segoe UI', 8)).pack(side='left', padx=8, pady=8)
 
         tk.Button(bar, text='  \u25B6  Start Prompting  ', bg=C['accent'], fg='white',
@@ -412,7 +440,7 @@ class App:
         self.pframe = tk.Frame(self.root, bg=C['bg'])
 
         # CONTROLS BAR AT BOTTOM FIRST so it never clips
-        ctrl = tk.Frame(self.pframe, bg=C['bg2'])
+        ctrl = self.ctrl_frame = tk.Frame(self.pframe, bg=C['bg2'])
         ctrl.pack(side='bottom', fill='x')
 
         lf = tk.Frame(ctrl, bg=C['bg2'])
@@ -443,7 +471,7 @@ class App:
         self._cbtn(rf, '+', lambda: self._adj_opacity(10))
 
         # PROGRESS BAR
-        pf = tk.Frame(self.pframe, bg=C['bg2'], height=2)
+        pf = self.pf_frame = tk.Frame(self.pframe, bg=C['bg2'], height=2)
         pf.pack(side='bottom', fill='x')
         pf.pack_propagate(False)
         self.prog = tk.Frame(pf, bg=C['accent'], height=2)
@@ -481,6 +509,8 @@ class App:
             self.pframe.pack(fill='both', expand=True)
             self.status_lbl.configure(text='LIVE', fg=C['green'])
             self.prompting = True
+            self._set_click_through(True)
+            self.ctrl_frame.pack_forget()
             self.ptext.yview_moveto(0)
             self.grip.lift()
         except Exception as e:
@@ -493,6 +523,8 @@ class App:
         self.edit_frame.pack(fill='both', expand=True)
         self.status_lbl.configure(text='EDIT', fg=C['accent'])
         self.prompting = False
+        self._set_click_through(False)
+        self.ctrl_frame.pack(side='bottom', fill='x', before=self.pf_frame)
         self.grip.lift()
 
     # ---- Scroll ----
@@ -507,22 +539,28 @@ class App:
     def _scroll_tick(self):
         if not self.auto_scroll or not self.prompting:
             return
-        cur = self.ptext.yview()
-        if cur[1] < 1.0:
-            step = (0.15 + self.speed * 0.35) / max(1, self.ptext.winfo_height() * 8)
-            self.ptext.yview_moveto(cur[0] + step)
-            self._update_prog()
-            self.root.after(max(16, 55 - self.speed * 4), self._scroll_tick)
-        else:
-            self._toggle_auto_scroll()
+        try:
+            cur = self.ptext.yview()
+            if cur[1] < 1.0:
+                step = (0.15 + self.speed * 0.35) / max(1, self.ptext.winfo_height() * 8)
+                self.ptext.yview_moveto(cur[0] + step)
+                self._update_prog()
+                self.root.after(max(16, 55 - self.speed * 4), self._scroll_tick)
+            else:
+                self._toggle_auto_scroll()
+        except Exception:
+            self.auto_scroll = False
 
     def _adj_speed(self, d):
         self.speed = max(1, min(10, self.speed + d))
         self.speed_lbl.configure(text=str(self.speed))
 
     def _on_wheel(self, e):
-        self.ptext.yview_scroll(-1 * (e.delta // 120), 'units')
-        self._update_prog()
+        try:
+            self.ptext.yview_scroll(-1 * (e.delta // 120), 'units')
+            self._update_prog()
+        except Exception:
+            pass
 
     def _update_prog(self):
         try:
@@ -580,7 +618,7 @@ class App:
         sys.exit(0)
 
     def run(self):
-        self.root.bind('<Escape>', lambda e: self._stop_prompting() if self.prompting else None)
+        # Removed <Escape> binding to prevent accidental exit
         self.root.bind('<Control-Return>', lambda e: self._start_prompting())
         self.root.mainloop()
 
