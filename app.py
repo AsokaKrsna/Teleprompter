@@ -347,6 +347,7 @@ class App:
         self.hotkey_thread_id = ctypes.windll.kernel32.GetCurrentThreadId()
         mods = MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT
         keys = [(2, VK_S), (3, VK_UP), (4, VK_DOWN), (5, VK_OEM_PLUS), (6, VK_OEM_MINUS)]
+        ok = sum(1 for hid, vk in keys if user32.RegisterHotKey(None, hid, mods, vk))
         print(f'[+] Global hotkeys: {ok}/{len(keys)} registered', flush=True)
 
         msg = ctypes.wintypes.MSG()
